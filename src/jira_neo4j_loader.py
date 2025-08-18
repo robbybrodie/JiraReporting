@@ -39,7 +39,7 @@ ISSUE_ENDPOINT = "/rest/api/2/issue/{key}"
 
 # Pagination settings
 DEFAULT_PAGE_SIZE = 100
-DEFAULT_MAX_RESULTS = 1000
+DEFAULT_MAX_RESULTS = 500
 
 # Logging
 logging.basicConfig(
