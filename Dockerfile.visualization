@@ -1,0 +1,35 @@
+FROM registry.access.redhat.com/ubi8/ubi:8.8
+
+# Install Python 3.9
+RUN dnf install -y python39 python39-pip python39-devel && \
+    dnf clean all
+
+# Create app user
+RUN useradd -m -u 1000820000 appuser
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY src/visualization_app.py ./
+COPY templates/ ./templates/
+
+# Change ownership to app user
+RUN chown -R appuser:appuser /app
+
+# Switch to app user
+USER appuser
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Run the application
+CMD ["python3", "visualization_app.py"]

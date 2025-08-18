@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: visualization-service
+  namespace: jira-cipoe-analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  labels:
+    app: visualization-service
+    component: frontend
+    app.kubernetes.io/part-of: jira-analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: visualization-service
+  template:
+    metadata:
+      labels:
+        app: visualization-service
+        component: frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000820000
+        fsGroup: 1000820000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: visualization-service
+        image: registry.access.redhat.com/ubi8/python-39:latest
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          pip3 install flask>=2.0.0 neo4j>=5.15.0 requests>=2.28 && \
+          python3 /app/visualization_app.py
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: NEO4J_URI
+          value: "neo4j://neo4j:7687"
+        - name: NEO4J_USER
+          value: "neo4j"
+        - name: NEO4J_PASSWORD
+          value: "password"
+        - name: FLASK_ENV
+          value: "production"
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+        - name: templates
+          mountPath: /app/templates
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000820000
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+      - name: app-code
+        configMap:
+          name: visualization-app
+          defaultMode: 0755
+      - name: templates
+        configMap:
+          name: visualization-templates
+          defaultMode: 0644
+      restartPolicy: Always

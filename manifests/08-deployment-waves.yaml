@@ -30,15 +30,25 @@ data:
     ## Wave 3 (sync-wave: "3")
     - Neo4j services and routes (04-neo4j-service.yaml)
     
-    ## Wave 4 (sync-wave: "4") - Jobs (manual trigger recommended)
-    - Initial data load job (06-initial-data-load-job.yaml)
+    ## Wave 4 (sync-wave: "4") - Data Loading Jobs & Visualization Config
+    - Initial data load job (06-initial-data-load-job.yaml) - manual trigger recommended
     - Incremental data load CronJob (07-incremental-data-load-cronjob.yaml)
+    - Visualization app ConfigMap (10-visualization-configmap.yaml)
+    - Visualization templates ConfigMap (12-visualization-templates-configmap.yaml)
+    
+    ## Wave 5 (sync-wave: "5") - Visualization Deployment
+    - Visualization service deployment (11-visualization-deployment.yaml)
+    
+    ## Wave 6 (sync-wave: "6") - Visualization Services & Routes
+    - Visualization service and route (13-visualization-service.yaml)
     
     ## Important Notes:
     1. Secrets must be created manually before deployment
     2. Initial data load job should be triggered manually after Neo4j is ready
-    3. CronJob will handle ongoing incremental updates
+    3. CronJob will handle ongoing incremental updates every 6 hours
     4. Neo4j Browser will be available via the OpenShift route
+    5. Visualization dashboard will be available via the visualization-dashboard route
+    6. Visualization service depends on Neo4j being ready and data loaded
 ---
 # Update existing manifests with sync wave annotations
 # These would typically be added directly to the existing files, but shown here for clarity
