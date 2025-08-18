@@ -134,14 +134,14 @@ class JiraClient:
             jql_query = "project = CIPOE AND issuelinks is not EMPTY ORDER BY key ASC"
             logger.info("Searching for CIPOE tickets with linked issues only")
         
-        payload = {
+        params = {
             "jql": jql_query,
-            "fields": SEARCH_FIELDS,
+            "fields": ",".join(SEARCH_FIELDS),
             "startAt": start_at,
             "maxResults": max_results,
         }
         
-        resp = self.safe_request("POST", url, json=payload)
+        resp = self.safe_request("GET", url, params=params)
         resp.raise_for_status()
         return resp.json()
     

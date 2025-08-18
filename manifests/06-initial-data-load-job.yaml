@@ -1,16 +1,16 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: initial-cipoe-data-load
+  name: cipoe-data-load
   namespace: jira-cipoe-analytics
   annotations:
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: Prune=false
   labels:
     app.kubernetes.io/name: jira-data-loader
-    app.kubernetes.io/component: initial-load
+    app.kubernetes.io/component: data-load
     app.kubernetes.io/part-of: jira-analytics
-    job-type: initial-load
+    job-type: stomping-load
 spec:
   backoffLimit: 3
   completions: 1
@@ -20,8 +20,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: jira-data-loader
-        app.kubernetes.io/component: initial-load
-        job-type: initial-load
+        app.kubernetes.io/component: data-load
+        job-type: stomping-load
     spec:
       restartPolicy: Never
       serviceAccountName: default
@@ -37,13 +37,14 @@ spec:
           echo "Installing dependencies..."
           pip install requests neo4j
           
-          echo "Starting initial CIPOE data load..."
+          echo "Starting stomping CIPOE data load (will clear existing data)..."
           python /app/jira_neo4j_loader.py \
             --page-size ${PAGE_SIZE:-50} \
             --max-results ${MAX_RESULTS:-5000} \
-            --start-at ${START_AT:-0}
+            --start-at ${START_AT:-0} \
+            --stomp
           
-          echo "Initial data load completed successfully"
+          echo "Stomping data load completed successfully"
         env:
         - name: JIRA_BASE_URL
           valueFrom:
@@ -260,7 +261,7 @@ data:
                 "maxResults": max_results,
             }
             
-            resp = self.safe_request("POST", url, json=payload)
+            resp = self.safe_request("GET", url, params=payload)
             resp.raise_for_status()
             return resp.json()
 
@@ -294,6 +295,8 @@ data:
                            help="Test connections without modifying data")
         parser.add_argument("--include-zero-links", action="store_true",
                            help="Include CIPOE tickets with zero linked issues (default: exclude them)")
+        parser.add_argument("--stomp", action="store_true",
+                           help="Clear all existing data before loading (stomping behavior)")
         
         args = parser.parse_args()
         
@@ -325,6 +328,12 @@ data:
             if args.dry_run:
                 logger.info("Dry run completed successfully")
                 return
+            
+            # Handle stomping behavior - clear existing data
+            if args.stomp:
+                logger.info("Stomping mode: Clearing all existing data...")
+                neo4j_conn.execute_query("MATCH (n) DETACH DELETE n")
+                logger.info("All existing data cleared")
             
             # Create indexes
             logger.info("Creating Neo4j indexes...")

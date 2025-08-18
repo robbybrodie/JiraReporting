@@ -38,30 +38,47 @@ echo -e "${YELLOW}📦 Creating namespace: ${NAMESPACE}${NC}"
 oc new-project ${NAMESPACE} 2>/dev/null || oc project ${NAMESPACE}
 echo
 
-# Prompt for JIRA credentials
-echo -e "${YELLOW}🎫 JIRA Configuration${NC}"
-read -p "Enter JIRA Base URL (default: https://issues.redhat.com): " JIRA_BASE_URL
-JIRA_BASE_URL=${JIRA_BASE_URL:-https://issues.redhat.com}
-
-echo "Enter your JIRA Personal Access Token:"
-read -s JIRA_TOKEN
-echo
-
-if [[ -z "$JIRA_TOKEN" ]]; then
-    echo -e "${RED}❌ JIRA token cannot be empty${NC}"
+# Check for secrets.env file
+echo -e "${YELLOW}🔍 Checking for secrets.env file...${NC}"
+if [[ ! -f "secrets.env" ]]; then
+    echo -e "${RED}❌ secrets.env file not found!${NC}"
+    echo
+    echo "Please create a secrets.env file in the project root with the following format:"
+    echo
+    echo "JIRA_BASE_URL=https://issues.redhat.com"
+    echo "JIRA_TOKEN=your_personal_access_token_here"
+    echo "NEO4J_PASSWORD=your_secure_neo4j_password_here"
+    echo
+    echo "You can copy secrets.env.example to secrets.env and populate it with your values."
     exit 1
 fi
 
-# Prompt for Neo4j password
-echo -e "${YELLOW}🗃️  Neo4j Configuration${NC}"
-echo "Enter a secure password for Neo4j (will be created):"
-read -s NEO4J_PASSWORD
-echo
+# Source the secrets file
+echo -e "${GREEN}✅ Found secrets.env file${NC}"
+source secrets.env
 
-if [[ -z "$NEO4J_PASSWORD" ]]; then
-    echo -e "${RED}❌ Neo4j password cannot be empty${NC}"
+# Validate that secrets are populated (not placeholder values)
+echo -e "${YELLOW}🔍 Validating secrets...${NC}"
+
+if [[ -z "$JIRA_BASE_URL" ]] || [[ "$JIRA_BASE_URL" == *"YOUR_"* ]]; then
+    echo -e "${RED}❌ JIRA_BASE_URL is not properly configured in secrets.env${NC}"
+    echo "Please set a valid JIRA base URL"
     exit 1
 fi
+
+if [[ -z "$JIRA_TOKEN" ]] || [[ "$JIRA_TOKEN" == *"YOUR_"* ]]; then
+    echo -e "${RED}❌ JIRA_TOKEN is not properly configured in secrets.env${NC}"
+    echo "Please set your JIRA Personal Access Token"
+    exit 1
+fi
+
+if [[ -z "$NEO4J_PASSWORD" ]] || [[ "$NEO4J_PASSWORD" == *"YOUR_"* ]]; then
+    echo -e "${RED}❌ NEO4J_PASSWORD is not properly configured in secrets.env${NC}"
+    echo "Please set a secure Neo4j password"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ All secrets validated successfully${NC}"
 
 echo -e "${YELLOW}🔧 Creating secrets...${NC}"
 

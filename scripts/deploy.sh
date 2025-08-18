@@ -74,12 +74,12 @@ echo -e "${YELLOW}Step 6: Next steps for data loading...${NC}"
 echo
 echo -e "${GREEN}🎯 Ready to load data!${NC}"
 echo
-echo "1. Trigger initial data load:"
-echo "   oc create job --from=job/initial-cipoe-data-load \\"
-echo "     initial-load-\$(date +%Y%m%d-%H%M%S) -n jira-cipoe-analytics"
+echo "1. Trigger stomping data load:"
+echo "   oc create job --from=job/cipoe-data-load \\"
+echo "     cipoe-load-\$(date +%Y%m%d-%H%M%S) -n jira-cipoe-analytics"
 echo
 echo "2. Monitor data load progress:"
-echo "   oc logs -f job/initial-load-TIMESTAMP -n jira-cipoe-analytics"
+echo "   oc logs -f job/cipoe-load-TIMESTAMP -n jira-cipoe-analytics"
 echo
 echo "3. Access Neo4j Browser:"
 if [[ "$NEO4J_URL" != "Route not ready yet" ]]; then

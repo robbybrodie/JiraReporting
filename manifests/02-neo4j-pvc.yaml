@@ -4,7 +4,7 @@ metadata:
   name: neo4j-data
   namespace: jira-cipoe-analytics
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "2"
   labels:
     app.kubernetes.io/name: neo4j
     app.kubernetes.io/component: database

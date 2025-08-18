@@ -2,6 +2,7 @@
 .env
 .env.*
 .env.local
+secrets.env
 
 # Reports (local, must not be committed)
 # Data and reports
