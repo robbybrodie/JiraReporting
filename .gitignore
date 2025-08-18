@@ -1,0 +1,80 @@
+# Environment / secrets
+.env
+.env.*
+.env.local
+
+# Reports (local, must not be committed)
+# Data and reports
+reports/
+data/
+
+# Secrets and sensitive configuration
+.env
+.env.local
+.env.production
+*.key
+*.pem
+*.p12
+secrets/
+credentials/
+
+# Container build artifacts
+.docker/
+build/
+dist/
+target/
+
+# IDE and editor files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.coverage
+
+# Neo4j
+*.db
+logs/
+data/databases/
+data/dbms/
+reports/*.json
+reports/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+venv/
+.venv/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Temporary files
+*.log

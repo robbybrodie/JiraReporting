@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neo4j
+  namespace: jira-cipoe-analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app.kubernetes.io/name: neo4j
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: jira-analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: neo4j
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: neo4j
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: jira-analytics
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 7474
+        runAsGroup: 7474
+        fsGroup: 7474
+      containers:
+      - name: neo4j
+        image: neo4j:5.15-community
+        ports:
+        - containerPort: 7474
+          name: http
+          protocol: TCP
+        - containerPort: 7687
+          name: bolt
+          protocol: TCP
+        env:
+        - name: NEO4J_AUTH
+          valueFrom:
+            secretKeyRef:
+              name: neo4j-auth
+              key: NEO4J_AUTH
+        - name: NEO4J_PLUGINS
+          value: '["apoc", "graph-data-science"]'
+        - name: NEO4J_apoc_export_file_enabled
+          value: "true"
+        - name: NEO4J_apoc_import_file_enabled
+          value: "true"
+        - name: NEO4J_apoc_import_file_use__neo4j__config
+          value: "true"
+        - name: NEO4J_ACCEPT_LICENSE_AGREEMENT
+          value: "yes"
+        volumeMounts:
+        - name: neo4j-data
+          mountPath: /data
+        - name: neo4j-logs
+          mountPath: /logs
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 7474
+          initialDelaySeconds: 120
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 7474
+          initialDelaySeconds: 60
+          periodSeconds: 10
+      volumes:
+      - name: neo4j-data
+        persistentVolumeClaim:
+          claimName: neo4j-data
+      - name: neo4j-logs
+        emptyDir: {}

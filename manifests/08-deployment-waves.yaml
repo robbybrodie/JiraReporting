@@ -1,0 +1,59 @@
+# This file uses ArgoCD Sync Waves to control deployment ordering
+# Waves are applied in ascending numerical order
+
+# Wave 0: Namespace and basic resources
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deployment-waves-info
+  namespace: jira-cipoe-analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    app.kubernetes.io/part-of: jira-analytics
+data:
+  deployment-order.md: |
+    # Deployment Order with ArgoCD Sync Waves
+    
+    ## Wave 0 (sync-wave: "0")
+    - Namespace (00-namespace.yaml)
+    - ConfigMaps and basic configuration
+    
+    ## Wave 1 (sync-wave: "1") 
+    - Secrets template (01-secrets-template.yaml) - manual creation required
+    - Persistent Volume Claims (02-neo4j-pvc.yaml)
+    
+    ## Wave 2 (sync-wave: "2")
+    - Neo4j database deployment (03-neo4j-deployment.yaml)
+    - Data loader configuration (05-data-loader-configmap.yaml)
+    
+    ## Wave 3 (sync-wave: "3")
+    - Neo4j services and routes (04-neo4j-service.yaml)
+    
+    ## Wave 4 (sync-wave: "4") - Jobs (manual trigger recommended)
+    - Initial data load job (06-initial-data-load-job.yaml)
+    - Incremental data load CronJob (07-incremental-data-load-cronjob.yaml)
+    
+    ## Important Notes:
+    1. Secrets must be created manually before deployment
+    2. Initial data load job should be triggered manually after Neo4j is ready
+    3. CronJob will handle ongoing incremental updates
+    4. Neo4j Browser will be available via the OpenShift route
+---
+# Update existing manifests with sync wave annotations
+# These would typically be added directly to the existing files, but shown here for clarity
+
+# Wave 1 annotations (to be added to existing files)
+# 01-secrets-template.yaml - sync-wave: "1"
+# 02-neo4j-pvc.yaml - sync-wave: "1"
+
+# Wave 2 annotations
+# 03-neo4j-deployment.yaml - sync-wave: "2"  
+# 05-data-loader-configmap.yaml - sync-wave: "2"
+
+# Wave 3 annotations
+# 04-neo4j-service.yaml - sync-wave: "3"
+
+# Wave 4 annotations (manual trigger recommended)
+# 06-initial-data-load-job.yaml - sync-wave: "4" + sync-options: Prune=false
+# 07-incremental-data-load-cronjob.yaml - sync-wave: "4"

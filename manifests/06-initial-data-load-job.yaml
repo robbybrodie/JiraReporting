@@ -1,0 +1,132 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: initial-cipoe-data-load
+  namespace: jira-cipoe-analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: Prune=false
+  labels:
+    app.kubernetes.io/name: jira-data-loader
+    app.kubernetes.io/component: initial-load
+    app.kubernetes.io/part-of: jira-analytics
+    job-type: initial-load
+spec:
+  backoffLimit: 3
+  completions: 1
+  parallelism: 1
+  activeDeadlineSeconds: 7200  # 2 hours max
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jira-data-loader
+        app.kubernetes.io/component: initial-load
+        job-type: initial-load
+    spec:
+      restartPolicy: Never
+      serviceAccountName: default
+      containers:
+      - name: data-loader
+        image: registry.redhat.io/ubi8/python-39:latest
+        imagePullPolicy: Always
+        command: ["/bin/bash"]
+        args:
+        - -c
+        - |
+          set -e
+          echo "Installing dependencies..."
+          pip install --user requests neo4j
+          
+          echo "Starting initial CIPOE data load..."
+          python /app/src/jira_neo4j_loader.py \
+            --page-size ${PAGE_SIZE:-50} \
+            --max-results ${MAX_RESULTS:-5000} \
+            --start-at ${START_AT:-0}
+          
+          echo "Initial data load completed successfully"
+        env:
+        - name: JIRA_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: jira-credentials
+              key: JIRA_BASE_URL
+        - name: JIRA_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: jira-credentials
+              key: JIRA_TOKEN
+        - name: NEO4J_URI
+          valueFrom:
+            configMapKeyRef:
+              name: data-loader-config
+              key: NEO4J_URI
+        - name: NEO4J_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: data-loader-config
+              key: NEO4J_USERNAME
+        - name: NEO4J_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: neo4j-auth
+              key: NEO4J_AUTH
+              # Extract password part after the /
+        - name: PAGE_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: data-loader-config
+              key: DEFAULT_PAGE_SIZE
+        - name: MAX_RESULTS
+          valueFrom:
+            configMapKeyRef:
+              name: data-loader-config
+              key: DEFAULT_MAX_RESULTS
+        - name: START_AT
+          value: "0"
+        volumeMounts:
+        - name: app-source
+          mountPath: /app
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: app-source
+        configMap:
+          name: app-source-code
+          defaultMode: 0755
+      initContainers:
+      - name: wait-for-neo4j
+        image: registry.redhat.io/ubi8/ubi-minimal:latest
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Waiting for Neo4j to be ready..."
+          until nc -z neo4j 7687; do
+            echo "Neo4j not ready, waiting 10s..."
+            sleep 10
+          done
+          echo "Neo4j is ready!"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-source-code
+  namespace: jira-cipoe-analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app.kubernetes.io/name: jira-data-loader
+    app.kubernetes.io/component: source-code
+data:
+  jira_neo4j_loader.py: |
+    # This will be populated by the build process
+    # For now, it's a placeholder - in a real deployment, this would contain
+    # the actual Python source code from src/jira_neo4j_loader.py
+    # or the container image would be built and pushed to a registry
+    import sys
+    print("Source code placeholder - container image needed")
+    sys.exit(1)

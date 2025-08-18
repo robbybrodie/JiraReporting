@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-loader-config
+  namespace: jira-cipoe-analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app.kubernetes.io/name: jira-data-loader
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: jira-analytics
+data:
+  # Default configuration for data loading
+  DEFAULT_PAGE_SIZE: "50"
+  DEFAULT_MAX_RESULTS: "10000"
+  NEO4J_URI: "bolt://neo4j:7687"
+  NEO4J_USERNAME: "neo4j"
+  
+  # Sample Cypher queries for analysis
+  sample_queries.cypher: |
+    // Count CIPOE issues by status
+    MATCH (c:CIPOE)
+    RETURN c.status as status, count(*) as count
+    ORDER BY count DESC;
+    
+    // Find CIPOE issues with most linked issues
+    MATCH (c:CIPOE)-[r:IMPACTS]-()
+    WITH c, count(r) as link_count
+    RETURN c.key, c.summary, link_count
+    ORDER BY link_count DESC
+    LIMIT 10;
+    
+    // Find issues that impact multiple CIPOE tickets
+    MATCH (i:Issue)-[r:IMPACTS]->(c:CIPOE)
+    WITH i, count(c) as cipoe_count
+    WHERE cipoe_count > 1
+    RETURN i.key, i.summary, cipoe_count
+    ORDER BY cipoe_count DESC
+    LIMIT 10;
+    
+    // Find impact chains (issues that impact CIPOE which impact other issues)
+    MATCH (source:Issue)-[:IMPACTS]->(cipoe:CIPOE)-[:IMPACTS]->(target:Issue)
+    RETURN source.key, cipoe.key, target.key
+    LIMIT 20;

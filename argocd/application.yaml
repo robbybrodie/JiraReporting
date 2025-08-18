@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jira-cipoe-analytics
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/robbybrodie/JiraReporting.git
+    targetRevision: HEAD
+    path: manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: jira-cipoe-analytics
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true
+  ignoreDifferences:
+  - group: ""
+    kind: Secret
+    jsonPointers:
+    - /data
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: jira-analytics
+  namespace: openshift-gitops
+spec:
+  description: JIRA CIPOE Analytics Platform
+  sourceRepos:
+  - https://github.com/robbybrodie/JiraReporting.git
+  destinations:
+  - namespace: jira-cipoe-analytics
+    server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+  - group: ''
+    kind: Namespace
+  - group: 'rbac.authorization.k8s.io'
+    kind: ClusterRole
+  - group: 'rbac.authorization.k8s.io'
+    kind: ClusterRoleBinding

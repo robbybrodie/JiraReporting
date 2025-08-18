@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jira-cipoe-analytics
+  labels:
+    name: jira-cipoe-analytics
+    app.kubernetes.io/name: jira-cipoe-analytics
+    app.kubernetes.io/part-of: jira-analytics
