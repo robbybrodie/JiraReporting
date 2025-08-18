@@ -23,10 +23,10 @@ spec:
         app.kubernetes.io/part-of: jira-analytics
     spec:
       securityContext:
-        runAsUser: 1000840000
-        fsGroup: 1000840000
+        runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+        fsGroupChangePolicy: OnRootMismatch
       containers:
       - name: neo4j
         image: neo4j:5.15-community
@@ -42,7 +42,6 @@ spec:
           capabilities:
             drop:
               - ALL
-          runAsUser: 1000840000
         env:
         - name: NEO4J_AUTH
           valueFrom:
