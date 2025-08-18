@@ -23,8 +23,8 @@ spec:
         app.kubernetes.io/part-of: jira-analytics
     spec:
       securityContext:
-        runAsNonRoot: true
-        fsGroup: 1000830000
+        runAsUser: 1000840000
+        fsGroup: 1000840000
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -42,7 +42,7 @@ spec:
           capabilities:
             drop:
               - ALL
-          runAsUser: 1000830000
+          runAsUser: 1000840000
         env:
         - name: NEO4J_AUTH
           valueFrom:
