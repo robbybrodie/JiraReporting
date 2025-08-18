@@ -45,11 +45,11 @@ spec:
             - |
               set -e
               echo "Installing dependencies..."
-              pip install --user requests neo4j
+              pip install requests neo4j
               
               echo "Starting incremental CIPOE data load..."
               # Load smaller batches more frequently for incremental updates
-              python /app/src/jira_neo4j_loader.py \
+              python /app/jira_neo4j_loader.py \
                 --page-size 25 \
                 --max-results 500 \
                 --start-at 0
