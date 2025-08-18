@@ -7,7 +7,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/robbybrodie/JiraReporting.git
-    targetRevision: HEAD
+    targetRevision: visualization-service-clean
     path: manifests
   destination:
     server: https://kubernetes.default.svc
