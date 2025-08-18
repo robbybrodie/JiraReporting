@@ -1,0 +1,21 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: neo4j-bolt
+  namespace: jira-cipoe-analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  labels:
+    app.kubernetes.io/name: neo4j
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: jira-analytics
+spec:
+  to:
+    kind: Service
+    name: neo4j
+    weight: 100
+  port:
+    targetPort: bolt
+  tls:
+    termination: passthrough
+  wildcardPolicy: None
