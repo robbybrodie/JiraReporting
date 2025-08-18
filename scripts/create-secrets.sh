@@ -60,19 +60,19 @@ source secrets.env
 # Validate that secrets are populated (not placeholder values)
 echo -e "${YELLOW}🔍 Validating secrets...${NC}"
 
-if [[ -z "$JIRA_BASE_URL" ]] || [[ "$JIRA_BASE_URL" == *"YOUR_"* ]]; then
+if [[ -z "$JIRA_BASE_URL" ]] || echo "$JIRA_BASE_URL" | grep -q "YOUR_.*_HERE"; then
     echo -e "${RED}❌ JIRA_BASE_URL is not properly configured in secrets.env${NC}"
     echo "Please set a valid JIRA base URL"
     exit 1
 fi
 
-if [[ -z "$JIRA_TOKEN" ]] || [[ "$JIRA_TOKEN" == *"YOUR_"* ]]; then
+if [[ -z "$JIRA_TOKEN" ]] || echo "$JIRA_TOKEN" | grep -q "YOUR_.*_HERE"; then
     echo -e "${RED}❌ JIRA_TOKEN is not properly configured in secrets.env${NC}"
     echo "Please set your JIRA Personal Access Token"
     exit 1
 fi
 
-if [[ -z "$NEO4J_PASSWORD" ]] || [[ "$NEO4J_PASSWORD" == *"YOUR_"* ]]; then
+if [[ -z "$NEO4J_PASSWORD" ]] || echo "$NEO4J_PASSWORD" | grep -q "YOUR_.*_HERE"; then
     echo -e "${RED}❌ NEO4J_PASSWORD is not properly configured in secrets.env${NC}"
     echo "Please set a secure Neo4j password"
     exit 1
