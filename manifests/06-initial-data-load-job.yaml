@@ -105,7 +105,7 @@ spec:
         args:
         - |
           echo "Waiting for Neo4j to be ready..."
-          until nc -z neo4j 7687; do
+          until timeout 3 bash -c "</dev/tcp/neo4j/7687" 2>/dev/null; do
             echo "Neo4j not ready, waiting 10s..."
             sleep 10
           done
@@ -123,10 +123,179 @@ metadata:
     app.kubernetes.io/component: source-code
 data:
   jira_neo4j_loader.py: |
-    # This will be populated by the build process
-    # For now, it's a placeholder - in a real deployment, this would contain
-    # the actual Python source code from src/jira_neo4j_loader.py
-    # or the container image would be built and pushed to a registry
-    import sys
-    print("Source code placeholder - container image needed")
-    sys.exit(1)
+    #!/usr/bin/env python3
+    """
+    JIRA CIPOE Analytics Data Loader
+    
+    This script loads CIPOE issues and their relationships from JIRA into a Neo4j graph database.
+    """
+    import os
+    import argparse
+    import requests
+    from neo4j import GraphDatabase
+    from datetime import datetime
+    import json
+    
+    def get_jira_issues(base_url, token, jql, start_at=0, max_results=50):
+        """Fetch issues from JIRA using JQL"""
+        search_url = f"{base_url}/rest/api/2/search"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        
+        params = {
+            "jql": jql,
+            "startAt": start_at,
+            "maxResults": max_results,
+            "fields": "summary,status,created,updated,description,issuelinks,labels,priority,reporter,assignee,components"
+        }
+        
+        print(f"Fetching issues: startAt={start_at}, maxResults={max_results}")
+        response = requests.get(search_url, headers=headers, params=params)
+        response.raise_for_status()
+        return response.json()
+    
+    def load_to_neo4j(driver, issues):
+        """Load issues and relationships into Neo4j"""
+        with driver.session() as session:
+            for issue in issues:
+                # Create issue node
+                session.run("""
+                    MERGE (i:Issue {key: $key})
+                    SET i.summary = $summary,
+                        i.status = $status,
+                        i.created = $created,
+                        i.updated = $updated,
+                        i.description = $description,
+                        i.priority = $priority,
+                        i.reporter = $reporter,
+                        i.assignee = $assignee,
+                        i.labels = $labels,
+                        i.components = $components
+                """, 
+                key=issue['key'],
+                summary=issue['fields']['summary'],
+                status=issue['fields']['status']['name'],
+                created=issue['fields']['created'],
+                updated=issue['fields']['updated'],
+                description=issue['fields']['description'] or '',
+                priority=issue['fields']['priority']['name'] if issue['fields']['priority'] else None,
+                reporter=issue['fields']['reporter']['displayName'] if issue['fields']['reporter'] else None,
+                assignee=issue['fields']['assignee']['displayName'] if issue['fields']['assignee'] else None,
+                labels=issue['fields']['labels'],
+                components=[c['name'] for c in issue['fields']['components']]
+                )
+                
+                # Create CIPOE label for CIPOE project issues
+                if issue['key'].startswith('CIPOE-'):
+                    session.run("""
+                        MERGE (i:Issue {key: $key})
+                        SET i:CIPOE
+                    """, key=issue['key'])
+                
+                # Create relationships from issue links
+                for link in issue['fields']['issuelinks']:
+                    if 'outwardIssue' in link:
+                        session.run("""
+                            MERGE (i1:Issue {key: $from_key})
+                            MERGE (i2:Issue {key: $to_key})
+                            MERGE (i1)-[:IMPACTS]->(i2)
+                        """, 
+                        from_key=issue['key'],
+                        to_key=link['outwardIssue']['key']
+                        )
+                    
+                    if 'inwardIssue' in link:
+                        session.run("""
+                            MERGE (i1:Issue {key: $from_key})
+                            MERGE (i2:Issue {key: $to_key})
+                            MERGE (i1)<-[:IMPACTS]-(i2)
+                        """, 
+                        from_key=issue['key'],
+                        to_key=link['inwardIssue']['key']
+                        )
+    
+    def main():
+        parser = argparse.ArgumentParser(description='Load JIRA CIPOE data into Neo4j')
+        parser.add_argument('--page-size', type=int, default=50, help='Issues per page')
+        parser.add_argument('--max-results', type=int, default=5000, help='Maximum issues to load')
+        parser.add_argument('--start-at', type=int, default=0, help='Starting offset')
+        parser.add_argument('--dry-run', action='store_true', help='Test without loading data')
+        
+        args = parser.parse_args()
+        
+        # Environment variables
+        jira_base_url = os.getenv('JIRA_BASE_URL', 'https://issues.redhat.com')
+        jira_token = os.getenv('JIRA_TOKEN')
+        neo4j_uri = os.getenv('NEO4J_URI', 'bolt://neo4j:7687')
+        neo4j_user = os.getenv('NEO4J_USERNAME', 'neo4j')
+        neo4j_password = os.getenv('NEO4J_PASSWORD')
+        
+        if not jira_token or not neo4j_password:
+            print("Error: JIRA_TOKEN and NEO4J_PASSWORD environment variables required")
+            return 1
+        
+        # Extract password from neo4j/password format if needed
+        if '/' in neo4j_password:
+            neo4j_password = neo4j_password.split('/')[-1]
+        
+        print(f"Starting CIPOE data load...")
+        print(f"JIRA URL: {jira_base_url}")
+        print(f"Neo4j URI: {neo4j_uri}")
+        print(f"Page size: {args.page_size}")
+        print(f"Max results: {args.max_results}")
+        
+        if args.dry_run:
+            print("DRY RUN - No data will be loaded")
+            return 0
+        
+        # Connect to Neo4j
+        driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+        
+        try:
+            # Test connection
+            with driver.session() as session:
+                session.run("RETURN 1")
+            print("Connected to Neo4j successfully")
+            
+            # Load CIPOE issues
+            total_loaded = 0
+            start_at = args.start_at
+            
+            while total_loaded < args.max_results:
+                remaining = args.max_results - total_loaded
+                page_size = min(args.page_size, remaining)
+                
+                jql = "project = CIPOE ORDER BY key ASC"
+                result = get_jira_issues(jira_base_url, jira_token, jql, start_at, page_size)
+                
+                issues = result.get('issues', [])
+                if not issues:
+                    print("No more issues found")
+                    break
+                
+                print(f"Loading {len(issues)} issues into Neo4j...")
+                load_to_neo4j(driver, issues)
+                
+                total_loaded += len(issues)
+                start_at += len(issues)
+                
+                print(f"Loaded {total_loaded} total issues")
+                
+                if len(issues) < page_size:
+                    print("Reached end of results")
+                    break
+            
+            print(f"Data load completed successfully! Total issues loaded: {total_loaded}")
+            return 0
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+        finally:
+            driver.close()
+    
+    if __name__ == "__main__":
+        exit(main())
