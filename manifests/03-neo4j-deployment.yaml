@@ -24,9 +24,9 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 7474
-        runAsGroup: 7474
-        fsGroup: 7474
+        fsGroup: 1000820000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: neo4j
         image: neo4j:5.15-community
@@ -37,6 +37,12 @@ spec:
         - containerPort: 7687
           name: bolt
           protocol: TCP
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          runAsUser: 1000820000
         env:
         - name: NEO4J_AUTH
           valueFrom:
