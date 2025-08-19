@@ -156,8 +156,8 @@ data:
     NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
     NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
-    # JQL Query from environment or default
-    JQL_QUERY = os.getenv("JQL_QUERY", 'summary ~ "CIPOE*" ORDER BY updated DESC')
+    # JQL Query from environment or default - now targets CIPOE project specifically
+    JQL_QUERY = os.getenv("JQL_QUERY", 'project = "CIPOE" ORDER BY updated DESC')
     UPDATED_SINCE = os.getenv("UPDATED_SINCE")  # e.g., "2025-06-01" or "-30d"
     PAGE_DELAY_MS = int(os.getenv("PAGE_DELAY_MS", "500"))
     MAX_ISSUES = os.getenv("MAX_ISSUES")  # optional cap for pilots
@@ -185,11 +185,12 @@ data:
 
 
     def extract_impacted_by_keys(issue: dict) -> list[str]:
-        """Extract 'is impacted by' link keys from issue"""
+        """Extract 'account is impacted by' link keys from issue"""
         out = []
         for link in (issue.get("fields", {}).get("issuelinks") or []):
             t = (link.get("type") or {})
-            if str(t.get("inward", "")).strip().lower() == "is impacted by".lower():
+            # Look for "account is impacted by" relationship type
+            if str(t.get("inward", "")).strip().lower() == "account is impacted by".lower():
                 other = link.get("inwardIssue")
                 if other and other.get("key"): 
                     out.append(other["key"])
@@ -486,14 +487,13 @@ data:
                     
                     total_fetched += len(issues)
                     
-                    # Apply filtering: CIPOE prefix AND has at least one "is impacted by" link
+                    # Apply filtering: CIPOE project issues that have "account is impacted by" links
                     kept_issues = []
                     for issue in issues:
-                        title = (issue.get("fields", {}).get("summary") or "")
-                        if is_cipoe_prefix(title):
-                            impacted_keys = extract_impacted_by_keys(issue)
-                            if len(impacted_keys) > 0:  # Must have at least one "is impacted by" link
-                                kept_issues.append(issue)
+                        # Since we're already filtering by project="CIPOE", all issues are CIPOE issues
+                        impacted_keys = extract_impacted_by_keys(issue)
+                        if len(impacted_keys) > 0:  # Must have at least one "account is impacted by" link
+                            kept_issues.append(issue)
                     
                     # Map to rows
                     for issue in kept_issues:
@@ -503,7 +503,7 @@ data:
                     kept_count = len(kept_issues)
                     total_kept_after_filter += kept_count
                     
-                    logger.info(f"Page: fetched {len(issues)}, kept {kept_count} (prefix+has-links), total so far: {total_kept_after_filter}")
+                    logger.info(f"Page: fetched {len(issues)}, kept {kept_count} (has-account-links), total so far: {total_kept_after_filter}")
                     
                     # Update pagination
                     start_at += len(issues)
@@ -516,14 +516,14 @@ data:
                     logger.error(f"Error processing page starting at {start_at}: {e}")
                     break
             
-            logger.info(f"Final totals - Fetched: {total_fetched}, Kept after filter: {total_kept_after_filter}")
+            logger.info(f"Final totals - Fetched: {total_fetched}, Kept with account links: {total_kept_after_filter}")
             
             # Preview first 3 kept rows
             if all_rows:
                 logger.info("Preview of kept rows:")
                 for i, row in enumerate(all_rows[:3]):
                     summary = (row['props']['summary'] or '')[:60]
-                    logger.info(f"  {row['key']}: {summary} (#{len(row['impactedKeys'])} impacted)")
+                    logger.info(f"  {row['key']}: {summary} (#{len(row['impactedKeys'])} account-impacted-by)")
             
             # Upsert to Neo4j
             if all_rows:
