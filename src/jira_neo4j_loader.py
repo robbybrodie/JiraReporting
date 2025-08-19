@@ -129,7 +129,9 @@ class Neo4jConnection:
     def execute_query(self, query: str, parameters: Dict = None):
         """Execute a Cypher query"""
         with self.driver.session() as session:
-            return session.run(query, parameters or {})
+            result = session.run(query, parameters or {})
+            # Consume the result within the session context to avoid consumption errors
+            return list(result)
     
     def create_constraint(self):
         """Create unique constraint for Issue nodes"""
@@ -497,7 +499,7 @@ def main():
             RETURN issue_count, count(r) as relationship_count
             """
             
-            result = list(neo4j_conn.execute_query(stats_query))
+            result = neo4j_conn.execute_query(stats_query)
             if result:
                 stats = result[0]
                 logger.info(f"Final graph - Issue nodes: {stats['issue_count']}, "
