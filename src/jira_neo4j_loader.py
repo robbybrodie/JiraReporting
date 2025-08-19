@@ -82,34 +82,16 @@ class Neo4jConnection:
 
 class JiraClient:
     """JIRA API client with retry logic"""
-    
+
     def __init__(self, base_url: str, token: str):
-        self.base_url = base_url
-        # Extract just the token part if it's in userid:token format
-        import base64
-        try:
-            decoded = base64.b64decode(token).decode('utf-8')
-            if ':' in decoded:
-                _, actual_token = decoded.split(':', 1)
-                self.headers = {
-                    "Authorization": f"Bearer {actual_token}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                }
-            else:
-                # Use as-is with Basic auth
-                self.headers = {
-                    "Authorization": f"Basic {token}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                }
-        except:
-            # Fallback to Basic auth if decode fails
-            self.headers = {
-                "Authorization": f"Basic {token}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            }
+        self.base_url = base_url.rstrip("/")
+        # Clean token of any whitespace/newlines 
+        clean_token = token.strip()
+        self.headers = {
+            "Authorization": f"Bearer {clean_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
         self.session = requests.Session()
     
     def safe_request(self, method: str, url: str, **kwargs) -> requests.Response:
