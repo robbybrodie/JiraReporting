@@ -249,12 +249,9 @@ data:
             """Search for CIPOE issues with pagination"""
             url = f"{self.base_url}{SEARCH_ENDPOINT}"
             
-            if include_zero_links:
-                jql_query = "project = CIPOE ORDER BY key ASC"
-                logger.info("Searching for all CIPOE tickets (including those with zero linked issues)")
-            else:
-                jql_query = "project = CIPOE AND issuelinks is not EMPTY ORDER BY key ASC"
-                logger.info("Searching for CIPOE tickets with linked issues only")
+            # Test with specific CIPOE ticket
+            jql_query = "key = CIPOE-13879"
+            logger.info("Searching for specific CIPOE ticket: CIPOE-13879")
             
             payload = {
                 "jql": jql_query,
