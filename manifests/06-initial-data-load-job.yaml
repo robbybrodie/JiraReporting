@@ -475,7 +475,10 @@ data:
             max_issues = int(MAX_ISSUES) if MAX_ISSUES else float('inf')
             
             while total_fetched < max_issues:
-                page_size = min(MAX_RESULTS_PER_PAGE, int(max_issues) - total_fetched)
+                if max_issues == float('inf'):
+                    page_size = MAX_RESULTS_PER_PAGE
+                else:
+                    page_size = min(MAX_RESULTS_PER_PAGE, int(max_issues) - total_fetched)
                 
                 try:
                     search_result = jira_client.search_issues(final_jql, start_at=start_at, max_results=page_size)
