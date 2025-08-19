@@ -229,7 +229,54 @@ def map_issue_to_row(issue: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def upsert_issues_and_relationships_chunked(neo4j_conn: Neo4jConnection, rows: List[Dict[str, Any]], prune: bool = True):
+def fetch_linked_issues_details(jira_client: JiraClient, linked_keys: set) -> Dict[str, Dict]:
+    """Fetch full details for linked issues in batches"""
+    if not linked_keys:
+        return {}
+    
+    linked_details = {}
+    keys_list = list(linked_keys)
+    
+    # Process in batches to avoid URL length limits
+    batch_size = 50
+    for i in range(0, len(keys_list), batch_size):
+        batch = keys_list[i:i + batch_size]
+        keys_query = " OR ".join([f'key = "{key}"' for key in batch])
+        
+        try:
+            logger.info(f"Fetching details for {len(batch)} linked issues (batch {i//batch_size + 1})")
+            result = jira_client.search_issues(keys_query, start_at=0, max_results=batch_size)
+            
+            for issue in result.get("issues", []):
+                issue_key = issue["key"]
+                f = issue.get("fields", {})
+                
+                linked_details[issue_key] = {
+                    "key": issue_key,
+                    "props": {
+                        "summary": f.get("summary"),
+                        "status": (f.get("status") or {}).get("name"),
+                        "issuetype": (f.get("issuetype") or {}).get("name"),
+                        "updated": f.get("updated"),
+                        "priority": (f.get("priority") or {}).get("name"),
+                        "project": (f.get("project") or {}).get("key"),
+                        "key_url": f"{JIRA_BASE_URL}/browse/{issue_key}",
+                    }
+                }
+            
+            # Rate limiting
+            if PAGE_DELAY_MS > 0:
+                time.sleep(PAGE_DELAY_MS / 1000.0)
+                
+        except Exception as e:
+            logger.warning(f"Error fetching batch {i//batch_size + 1}: {e}")
+            continue
+    
+    logger.info(f"Successfully fetched details for {len(linked_details)} linked issues")
+    return linked_details
+
+
+def upsert_issues_and_relationships_chunked(neo4j_conn: Neo4jConnection, rows: List[Dict[str, Any]], linked_issues: Dict[str, Dict], prune: bool = True):
     """Upsert Issue nodes and IMPACTED_BY relationships in chunks"""
     if not rows:
         return
@@ -238,8 +285,15 @@ def upsert_issues_and_relationships_chunked(neo4j_conn: Neo4jConnection, rows: L
     for i in range(0, len(rows), CHUNK):
         chunk = rows[i:i + CHUNK]
         
-        # Upsert issues and relationships
-        query = """
+        # Prepare linked issues data for this chunk
+        chunk_linked = []
+        for row in chunk:
+            for linked_key in row.get("impactedKeys", []):
+                if linked_key in linked_issues:
+                    chunk_linked.append(linked_issues[linked_key])
+        
+        # Upsert main issues and relationships
+        main_query = """
         UNWIND $rows AS row
         MERGE (i:Issue {key: row.key})
         ON CREATE SET i.firstSeen = datetime(), i += row.props
@@ -253,10 +307,22 @@ def upsert_issues_and_relationships_chunked(neo4j_conn: Neo4jConnection, rows: L
         SET r.lastSeen = datetime()
         """
         
-        neo4j_conn.execute_query(query, {"rows": chunk})
-        logger.info(f"Upserted chunk {i//CHUNK + 1}: {len(chunk)} rows")
+        neo4j_conn.execute_query(main_query, {"rows": chunk})
+        
+        # Upsert detailed linked issues
+        if chunk_linked:
+            linked_query = """
+            UNWIND $linked_issues AS linked
+            MERGE (j:Issue {key: linked.key})
+            ON CREATE SET j.firstSeen = datetime(), j += linked.props
+            ON MATCH  SET j.lastSeen  = datetime(), j += linked.props
+            """
+            
+            neo4j_conn.execute_query(linked_query, {"linked_issues": chunk_linked})
+        
+        logger.info(f"Upserted chunk {i//CHUNK + 1}: {len(chunk)} main issues, {len(chunk_linked)} linked issues")
     
-    logger.info(f"Upserted {len(rows)} rows total")
+    logger.info(f"Upserted {len(rows)} main issues total with linked issue details")
     
     # Optional pruning
     if prune:
@@ -353,7 +419,10 @@ def main():
         max_issues = int(MAX_ISSUES) if MAX_ISSUES else float('inf')
         
         while total_fetched < max_issues:
-            page_size = min(MAX_RESULTS_PER_PAGE, int(max_issues) - total_fetched)
+            if max_issues == float('inf'):
+                page_size = MAX_RESULTS_PER_PAGE
+            else:
+                page_size = min(MAX_RESULTS_PER_PAGE, int(max_issues) - total_fetched)
             
             try:
                 search_result = jira_client.search_issues(final_jql, start_at=start_at, max_results=page_size)
@@ -403,10 +472,22 @@ def main():
                 summary = (row['props']['summary'] or '')[:60]
                 logger.info(f"  {row['key']}: {summary} (#{len(row['impactedKeys'])} account-impacted-by)")
         
-        # Upsert to Neo4j
+        # Collect all unique linked issue keys and fetch their details
         if all_rows:
-            logger.info(f"Before write: {len(all_rows)} rows to upsert")
-            upsert_issues_and_relationships_chunked(neo4j_conn, all_rows, prune=PRUNE)
+            logger.info(f"Before write: {len(all_rows)} main rows to upsert")
+            
+            # Collect all unique linked issue keys
+            all_linked_keys = set()
+            for row in all_rows:
+                all_linked_keys.update(row.get("impactedKeys", []))
+            
+            logger.info(f"Found {len(all_linked_keys)} unique linked issues to fetch details for")
+            
+            # Fetch details for all linked issues
+            linked_issues_details = fetch_linked_issues_details(jira_client, all_linked_keys)
+            
+            # Upsert everything with linked issue details
+            upsert_issues_and_relationships_chunked(neo4j_conn, all_rows, linked_issues_details, prune=PRUNE)
             
             # Log final statistics
             stats_query = """
