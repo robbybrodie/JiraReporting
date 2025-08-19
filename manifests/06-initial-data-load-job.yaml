@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: cipoe-data-load
+  name: cipoe-data-load-v3
   namespace: jira-cipoe-analytics
   annotations:
     argocd.argoproj.io/sync-wave: "4"
@@ -38,10 +38,7 @@ spec:
           pip install requests neo4j
           
           echo "Starting CIPOE data load..."
-          python /app/jira_neo4j_loader.py \
-            --page-size ${PAGE_SIZE:-50} \
-            --max-results ${MAX_RESULTS:-5000} \
-            --start-at ${START_AT:-0}
+          python /app/jira_neo4j_loader.py
           
           echo "CIPOE data load completed successfully"
         env:
@@ -127,8 +124,9 @@ data:
     """
     JIRA CIPOE to Neo4j Graph Database Loader
 
-    This script queries JIRA for issues with CIPOE in their summary and their linked issues,
-    then stores the relationships in a Neo4j graph database for analysis.
+    This script queries JIRA for issues whose summary starts with "CIPOE" and that have 
+    at least one "is impacted by" link, then stores the relationships in a Neo4j graph 
+    database for analysis.
 
     Security notes:
     - Credentials are provided via environment variables from Kubernetes secrets
@@ -142,6 +140,7 @@ data:
     import logging
     import re
     from typing import Dict, Any, List, Optional
+    from datetime import datetime, timedelta
 
     try:
         import requests
@@ -158,17 +157,19 @@ data:
     NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
     # JQL Query from environment or default
-    JQL_QUERY = os.getenv("JQL_QUERY", 'text ~ "CIPOE" ORDER BY updated DESC')
-    # Prune setting from environment
+    JQL_QUERY = os.getenv("JQL_QUERY", 'summary ~ "CIPOE*" ORDER BY updated DESC')
+    UPDATED_SINCE = os.getenv("UPDATED_SINCE")  # e.g., "2025-06-01" or "-30d"
+    PAGE_DELAY_MS = int(os.getenv("PAGE_DELAY_MS", "500"))
+    MAX_ISSUES = os.getenv("MAX_ISSUES")  # optional cap for pilots
     PRUNE = os.getenv("PRUNE", "true").lower() == "true"
+    CHUNK = int(os.getenv("CHUNK", "500"))
 
-    # JIRA API configuration - updated fields as specified
+    # JIRA API configuration - specific fields only
     SEARCH_FIELDS = ["summary", "status", "updated", "issuetype", "priority", "project", "issuelinks"]
     SEARCH_ENDPOINT = "/rest/api/2/search"
 
     # Pagination settings
-    DEFAULT_PAGE_SIZE = 100
-    DEFAULT_MAX_RESULTS = 500
+    MAX_RESULTS_PER_PAGE = 100
 
     # Logging
     logging.basicConfig(
@@ -178,10 +179,62 @@ data:
     logger = logging.getLogger("cipoe-neo4j-loader")
 
 
-    def is_cipoe_title_prefix(issue: dict) -> bool:
-        """Check if issue summary starts with CIPOE (case-insensitive)"""
-        s = ((issue.get("fields") or {}).get("summary") or "")
-        return bool(re.match(r'^\s*CIPOE(\b|[\s:\-_/])', s, flags=re.IGNORECASE))
+    def is_cipoe_prefix(title: str) -> bool:
+        """Check if issue summary starts with CIPOE (case-insensitive, anchored at start)"""
+        return bool(re.match(r'^\s*CIPOE(\b|[\s:\-_/])', title or '', flags=re.IGNORECASE))
+
+
+    def extract_impacted_by_keys(issue: dict) -> list[str]:
+        """Extract 'is impacted by' link keys from issue"""
+        out = []
+        for link in (issue.get("fields", {}).get("issuelinks") or []):
+            t = (link.get("type") or {})
+            if str(t.get("inward", "")).strip().lower() == "is impacted by".lower():
+                other = link.get("inwardIssue")
+                if other and other.get("key"): 
+                    out.append(other["key"])
+        
+        # de-dupe preserve order
+        seen = set()
+        res = []
+        for k in out:
+            if k not in seen: 
+                seen.add(k)
+                res.append(k)
+        return res
+
+
+    def parse_updated_since(value: str) -> str:
+        """Parse UPDATED_SINCE value and return formatted date"""
+        if not value:
+            return ""
+        
+        value = value.strip()
+        
+        # Handle relative dates like "-30d"
+        if value.startswith('-') and value.endswith('d'):
+            try:
+                days = int(value[1:-1])
+                target_date = datetime.now() - timedelta(days=days)
+                return target_date.strftime('%Y-%m-%d')
+            except ValueError:
+                logger.warning(f"Invalid UPDATED_SINCE format: {value}")
+                return ""
+        
+        # Handle absolute dates (assume already in correct format)
+        return value
+
+
+    def build_jql_query() -> str:
+        """Build final JQL query with optional UPDATED_SINCE clause"""
+        query = JQL_QUERY
+        
+        if UPDATED_SINCE:
+            updated_date = parse_updated_since(UPDATED_SINCE)
+            if updated_date:
+                query += f' AND updated >= "{updated_date}"'
+        
+        return query
 
 
     class Neo4jConnection:
@@ -213,7 +266,7 @@ data:
 
 
     class JiraClient:
-        """JIRA API client with retry logic"""
+        """JIRA API client with enhanced retry logic and rate limiting"""
 
         def __init__(self, base_url: str, token: str):
             self.base_url = base_url.rstrip("/")
@@ -227,9 +280,9 @@ data:
             self.session = requests.Session()
         
         def safe_request(self, method: str, url: str, **kwargs) -> requests.Response:
-            """Request with retry/backoff for rate limiting"""
+            """Request with enhanced retry/backoff for rate limiting"""
             max_attempts = 5
-            backoff = 1.0
+            backoff = 0.5  # Start with 0.5s
             
             for attempt in range(1, max_attempts + 1):
                 resp = self.session.request(method, url, timeout=30, headers=self.headers, **kwargs)
@@ -237,13 +290,23 @@ data:
                 if resp.status_code < 400:
                     return resp
                 
-                if resp.status_code in (429,) or 500 <= resp.status_code < 600:
+                if resp.status_code in (429, 502, 503) or 500 <= resp.status_code < 600:
+                    # Check for Retry-After header
+                    retry_after = resp.headers.get('Retry-After')
+                    if retry_after:
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            delay = backoff
+                    else:
+                        delay = backoff
+                    
                     logger.warning(
                         f"Request to {url} returned {resp.status_code}. "
-                        f"Attempt {attempt}/{max_attempts}. Backing off {backoff}s"
+                        f"Attempt {attempt}/{max_attempts}. Backing off {delay}s"
                     )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, 8)
+                    time.sleep(delay)
+                    backoff = min(backoff * 2, 8)  # Double up to ~8s
                     continue
                 
                 # Client errors - don't retry
@@ -251,7 +314,7 @@ data:
             
             return resp
         
-        def search_issues(self, jql: str, start_at: int = 0, max_results: int = 100) -> Dict[str, Any]:
+        def search_issues(self, jql: str, start_at: int = 0, max_results: int = MAX_RESULTS_PER_PAGE) -> Dict[str, Any]:
             """Search for issues using JQL with pagination"""
             url = f"{self.base_url}{SEARCH_ENDPOINT}"
             
@@ -259,7 +322,7 @@ data:
                 "jql": jql,
                 "fields": ",".join(SEARCH_FIELDS),
                 "startAt": start_at,
-                "maxResults": max_results,
+                "maxResults": min(max_results, MAX_RESULTS_PER_PAGE),
             }
             
             resp = self.safe_request("GET", url, params=params)
@@ -267,29 +330,10 @@ data:
             return resp.json()
 
 
-    def extract_impacted_by_links(issue: Dict[str, Any]) -> List[str]:
-        """Extract 'is impacted by' link keys from issue"""
-        fields = issue.get("fields", {})
-        issue_links = fields.get("issuelinks", []) or []
-        
-        impacted_keys = []
-        
-        for link in issue_links:
-            link_type = link.get("type", {})
-            inward_desc = (link_type.get("inward", "") or "").lower()
-            
-            # Check if this is an "is impacted by" relationship (case-insensitive)
-            if "is impacted by" in inward_desc and "inwardIssue" in link:
-                inward_key = link["inwardIssue"].get("key")
-                if inward_key:
-                    impacted_keys.append(inward_key)
-        
-        return impacted_keys
-
-
     def map_issue_to_row(issue: Dict[str, Any]) -> Dict[str, Any]:
         """Map JIRA issue to our row format"""
         f = issue.get("fields", {})
+        impacted_keys = extract_impacted_by_keys(issue)
         
         return {
             "key": issue["key"],
@@ -299,68 +343,57 @@ data:
                 "issuetype": (f.get("issuetype") or {}).get("name"),
                 "updated": f.get("updated"),
                 "priority": (f.get("priority") or {}).get("name"),
-                "project": ((f.get("project") or {}).get("key")),
+                "project": (f.get("project") or {}).get("key"),
                 "key_url": f"{JIRA_BASE_URL}/browse/{issue['key']}",
             },
-            "impactedKeys": extract_impacted_by_links(issue)
+            "impactedKeys": impacted_keys
         }
 
 
-    def upsert_issues_and_relationships(neo4j_conn: Neo4jConnection, rows: List[Dict[str, Any]], prune: bool = True):
-        """Upsert Issue nodes and IMPACTED_BY relationships"""
+    def upsert_issues_and_relationships_chunked(neo4j_conn: Neo4jConnection, rows: List[Dict[str, Any]], prune: bool = True):
+        """Upsert Issue nodes and IMPACTED_BY relationships in chunks"""
         if not rows:
             return
         
-        # Upsert all Issue nodes
-        for row in rows:
+        # Process in chunks
+        for i in range(0, len(rows), CHUNK):
+            chunk = rows[i:i + CHUNK]
+            
+            # Upsert issues and relationships
             query = """
-            MERGE (i:Issue {key: $key})
-            SET i += $props
+            UNWIND $rows AS row
+            MERGE (i:Issue {key: row.key})
+            ON CREATE SET i.firstSeen = datetime(), i += row.props
+            ON MATCH  SET i.lastSeen  = datetime(), i += row.props
+            WITH i, coalesce(row.impactedKeys, []) AS impactList
+            UNWIND impactList AS k
+            MERGE (j:Issue {key: k})
+            ON CREATE SET j.firstSeen = datetime()
+            MERGE (i)-[r:IMPACTED_BY]->(j)
+            ON CREATE SET r.firstSeen = datetime()
+            SET r.lastSeen = datetime()
             """
-            params = {
-                "key": row["key"],
-                "props": row["props"]
-            }
-            neo4j_conn.execute_query(query, params)
+            
+            neo4j_conn.execute_query(query, {"rows": chunk})
+            logger.info(f"Upserted chunk {i//CHUNK + 1}: {len(chunk)} rows")
         
-        # Create IMPACTED_BY relationships
-        all_relationships = []
-        for row in rows:
-            for impacted_key in row["impactedKeys"]:
-                all_relationships.append((impacted_key, row["key"]))
+        logger.info(f"Upserted {len(rows)} rows total")
         
-        # Upsert relationships
-        for impacter_key, impacted_key in all_relationships:
-            query = """
-            MATCH (impacter:Issue {key: $impacter_key})
-            MATCH (impacted:Issue {key: $impacted_key})
-            MERGE (impacter)-[r:IMPACTED_BY]->(impacted)
-            """
-            params = {
-                "impacter_key": impacter_key,
-                "impacted_key": impacted_key
-            }
-            neo4j_conn.execute_query(query, params)
-        
-        # Optional pruning: remove IMPACTED_BY relationships not in current payload
+        # Optional pruning
         if prune:
-            current_issue_keys = [row["key"] for row in rows]
-            if current_issue_keys:
-                query = """
-                MATCH (i:Issue)-[r:IMPACTED_BY]->()
-                WHERE i.key IN $current_keys
-                AND NOT EXISTS {
-                    MATCH (impacter:Issue)-[r2:IMPACTED_BY]->(i)
-                    WHERE (impacter.key, i.key) IN $valid_relationships
-                }
-                DELETE r
-                """
-                params = {
-                    "current_keys": current_issue_keys,
-                    "valid_relationships": all_relationships
-                }
-                result = neo4j_conn.execute_query(query, params)
-                logger.info(f"Pruning completed for {len(current_issue_keys)} issues")
+            prune_query = """
+            UNWIND $rows AS row
+            MATCH (i:Issue {key: row.key})
+            OPTIONAL MATCH (i)-[r:IMPACTED_BY]->(x:Issue)
+            WHERE NOT x.key IN coalesce(row.impactedKeys, [])
+            DELETE r
+            """
+            
+            for i in range(0, len(rows), CHUNK):
+                chunk = rows[i:i + CHUNK]
+                neo4j_conn.execute_query(prune_query, {"rows": chunk})
+            
+            logger.info(f"Pruned stale edges for {len(rows)} rows")
 
 
     def validate_environment():
@@ -382,12 +415,6 @@ data:
         import argparse
         
         parser = argparse.ArgumentParser(description="Load JIRA CIPOE data into Neo4j")
-        parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE,
-                           help="Number of issues to process per page")
-        parser.add_argument("--max-results", type=int, default=DEFAULT_MAX_RESULTS,
-                           help="Maximum number of issues to process")
-        parser.add_argument("--start-at", type=int, default=0,
-                           help="Starting offset for pagination")
         parser.add_argument("--dry-run", action="store_true",
                            help="Test connections without modifying data")
         
@@ -395,6 +422,18 @@ data:
         
         # Validate environment
         validate_environment()
+        
+        # Build final JQL query
+        final_jql = build_jql_query()
+        
+        # Show configuration
+        logger.info(f"JQL_QUERY: {final_jql}")
+        logger.info(f"UPDATED_SINCE: {UPDATED_SINCE or 'not set'}")
+        logger.info(f"PAGE_DELAY_MS: {PAGE_DELAY_MS}")
+        if MAX_ISSUES:
+            logger.info(f"MAX_ISSUES: {MAX_ISSUES}")
+        logger.info(f"PRUNE: {PRUNE}")
+        logger.info(f"CHUNK: {CHUNK}")
         
         # Initialize connections
         logger.info("Connecting to Neo4j...")
@@ -413,9 +452,10 @@ data:
             # Test connections
             logger.info("Testing Neo4j connection...")
             neo4j_conn.execute_query("RETURN 1 as test")
+            logger.info("Neo4j connection successful")
             
             logger.info("Testing JIRA connection...")
-            test_search = jira_client.search_issues(JQL_QUERY, start_at=0, max_results=1)
+            test_search = jira_client.search_issues(final_jql, start_at=0, max_results=1)
             logger.info(f"JIRA connection successful. Total issues found: {test_search.get('total', 'unknown')}")
             
             if args.dry_run:
@@ -429,19 +469,15 @@ data:
             # Start data loading
             all_rows = []
             total_fetched = 0
-            total_after_filter = 0
-            start_at = args.start_at
+            total_kept_after_filter = 0
+            start_at = 0
+            max_issues = int(MAX_ISSUES) if MAX_ISSUES else float('inf')
             
-            logger.info(f"Using JQL query: {JQL_QUERY}")
-            logger.info(f"Prune mode: {'enabled' if PRUNE else 'disabled'}")
-            
-            while total_fetched < args.max_results:
-                page_size = min(args.page_size, args.max_results - total_fetched)
-                
-                logger.info(f"Fetching issues: offset={start_at}, limit={page_size}")
+            while total_fetched < max_issues:
+                page_size = min(MAX_RESULTS_PER_PAGE, int(max_issues) - total_fetched)
                 
                 try:
-                    search_result = jira_client.search_issues(JQL_QUERY, start_at=start_at, max_results=page_size)
+                    search_result = jira_client.search_issues(final_jql, start_at=start_at, max_results=page_size)
                     issues = search_result.get("issues", [])
                     
                     if not issues:
@@ -450,42 +486,51 @@ data:
                     
                     total_fetched += len(issues)
                     
-                    # Apply CIPOE title prefix filter
-                    filtered_issues = [issue for issue in issues if is_cipoe_title_prefix(issue)]
+                    # Apply filtering: CIPOE prefix AND has at least one "is impacted by" link
+                    kept_issues = []
+                    for issue in issues:
+                        title = (issue.get("fields", {}).get("summary") or "")
+                        if is_cipoe_prefix(title):
+                            impacted_keys = extract_impacted_by_keys(issue)
+                            if len(impacted_keys) > 0:  # Must have at least one "is impacted by" link
+                                kept_issues.append(issue)
                     
                     # Map to rows
-                    for issue in filtered_issues:
+                    for issue in kept_issues:
                         row = map_issue_to_row(issue)
                         all_rows.append(row)
-                        total_after_filter += 1
                     
-                    logger.info(f"Batch: fetched {len(issues)}, kept {len(filtered_issues)} after CIPOE filter")
+                    kept_count = len(kept_issues)
+                    total_kept_after_filter += kept_count
+                    
+                    logger.info(f"Page: fetched {len(issues)}, kept {kept_count} (prefix+has-links), total so far: {total_kept_after_filter}")
                     
                     # Update pagination
                     start_at += len(issues)
                     
-                    # Rate limiting
-                    time.sleep(1)
+                    # Page delay
+                    if PAGE_DELAY_MS > 0:
+                        time.sleep(PAGE_DELAY_MS / 1000.0)
                     
                 except Exception as e:
                     logger.error(f"Error processing page starting at {start_at}: {e}")
                     break
             
-            logger.info(f"Total fetched from JIRA: {total_fetched}")
-            logger.info(f"Total after prefix filter: {total_after_filter}")
+            logger.info(f"Final totals - Fetched: {total_fetched}, Kept after filter: {total_kept_after_filter}")
             
-            # Preview first 3 kept issues
+            # Preview first 3 kept rows
             if all_rows:
-                logger.info("Preview of first 3 kept issues:")
+                logger.info("Preview of kept rows:")
                 for i, row in enumerate(all_rows[:3]):
-                    logger.info(f"  {i+1}. {row['key']}: {row['props']['summary']} (impacted by {len(row['impactedKeys'])} issues)")
+                    summary = (row['props']['summary'] or '')[:60]
+                    logger.info(f"  {row['key']}: {summary} (#{len(row['impactedKeys'])} impacted)")
             
             # Upsert to Neo4j
             if all_rows:
-                logger.info(f"Upserting {len(all_rows)} issues to Neo4j...")
-                upsert_issues_and_relationships(neo4j_conn, all_rows, prune=PRUNE)
+                logger.info(f"Before write: {len(all_rows)} rows to upsert")
+                upsert_issues_and_relationships_chunked(neo4j_conn, all_rows, prune=PRUNE)
                 
-                # Log statistics
+                # Log final statistics
                 stats_query = """
                 MATCH (i:Issue) 
                 WITH count(i) as issue_count
@@ -496,10 +541,10 @@ data:
                 result = list(neo4j_conn.execute_query(stats_query))
                 if result:
                     stats = result[0]
-                    logger.info(f"Graph statistics - Issue nodes: {stats['issue_count']}, "
+                    logger.info(f"Final graph - Issue nodes: {stats['issue_count']}, "
                                f"IMPACTED_BY relationships: {stats['relationship_count']}")
             else:
-                logger.info("No issues matched the CIPOE title prefix filter")
+                logger.info("No issues matched the filtering criteria")
             
             logger.info("Data loading completed successfully")
         
