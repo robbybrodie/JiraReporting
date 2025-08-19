@@ -492,18 +492,21 @@ def main():
             upsert_issues_and_relationships_chunked(neo4j_conn, all_rows, linked_issues_details, prune=PRUNE)
             
             # Log final statistics
-            stats_query = """
-            MATCH (i:Issue) 
-            WITH count(i) as issue_count
-            MATCH ()-[r:IMPACTED_BY]->()
-            RETURN issue_count, count(r) as relationship_count
-            """
-            
-            result = neo4j_conn.execute_query(stats_query)
-            if result:
-                stats = result[0]
-                logger.info(f"Final graph - Issue nodes: {stats['issue_count']}, "
-                           f"IMPACTED_BY relationships: {stats['relationship_count']}")
+            try:
+                stats_query = """
+                MATCH (i:Issue) 
+                WITH count(i) as issue_count
+                MATCH ()-[r:IMPACTED_BY]->()
+                RETURN issue_count, count(r) as relationship_count
+                """
+                
+                result = neo4j_conn.execute_query(stats_query)
+                if result:
+                    stats = result[0]
+                    logger.info(f"Final graph - Issue nodes: {stats['issue_count']}, "
+                               f"IMPACTED_BY relationships: {stats['relationship_count']}")
+            except Exception as e:
+                logger.warning(f"Could not retrieve final statistics (data was loaded successfully): {e}")
         else:
             logger.info("No issues matched the filtering criteria")
         
